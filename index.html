@@ -8587,7 +8587,7 @@ p.pl,p.li,p.nota{padding-left:1.2em}p.li::before{left:2px}p.k1{margin-left:12px}
 </div>
 </main>
 <div class="busca" id="busca" role="dialog" aria-label="Buscar en la documentación"><div class="caja">
-<div class="campo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" type="search" placeholder="Pregunta o describe lo que buscas…" autocomplete="off"><kbd>Esc</kbd></div>
+<div class="campo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" type="search" placeholder="Pregunta o describe lo que buscas…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"><kbd>Esc</kbd></div>
 <div class="estado" id="estado">Escribe una palabra o una frase</div><div class="interp" id="interp"></div><ol id="res"></ol>
 <div class="ayuda"><span>↑ ↓ moverse</span><span>Intro ir al resultado</span><span>Código de requisito: F(B)-6</span><span>"entre comillas" frase exacta</span></div></div></div>
 <script>
@@ -8633,7 +8633,9 @@ addEventListener('load',function(){var t=destino();if(t&&t.el)t.el.scrollIntoVie
 // palabras vacías, reduce cada palabra a su raíz (plurales y derivadas), amplía con sinónimos del dominio,
 // tolera errores de escritura y ordena los fragmentos por relevancia (BM25), premiando la proximidad de los
 // conceptos, la coincidencia literal de la frase y que el concepto figure en el título del apartado.
-// Entre comillas se busca la frase exacta. Un código de requisito («F(B)-6») lleva directamente a ese requisito.
+// Entre comillas (rectas, tipográficas “ ” o latinas « ») se busca el texto exacto: sin distinguir mayúsculas ni acentos,
+// pero por palabras enteras. Se puede combinar con palabras sueltas: baliza "fondo configurado". Un código de requisito
+// («F(B)-6») lleva directamente a ese requisito.
 // En una página con varios documentos, unas casillas eligen en cuáles se busca (la elección se recuerda en el navegador).
 (function(){
 var cap=document.getElementById('busca'),q=document.getElementById('q'),res=document.getElementById('res'),est=document.getElementById('estado'),interp=document.getElementById('interp');
@@ -8689,6 +8691,11 @@ if(DOCS.length>1){
  filtros.querySelector('button').addEventListener('click',function(){filtros.querySelectorAll('input').forEach(function(i){i.checked=true});activos=new Set(DOCS.map(function(d){return d.id}));guardarDocs();buscar();q.focus()})}
 function admitido(u){return !activos||activos.has(u.doc)}
 var RE_COD=/^[A-Z]{1,4}(?:\([A-Z]\))?-\d+(?:\.\d+)?$/;
+// Comillas: rectas, tipográficas (las que escriben el teclado del móvil y la sustitución automática de Mac) y latinas
+var QU='"\u201C\u201D\u201E\u201F\u00AB\u00BB',RE_Q=new RegExp('['+QU+']([^'+QU+']+)['+QU+']','g'),RE_QS=new RegExp('['+QU+']','g');
+var frases=[];
+// La frase (ya normalizada) como expresión: por palabras enteras, con cualquier blanco entre palabras
+function reFrase(p){return new RegExp('(^|[^a-z0-9])'+p.replace(/[.*+?^${}()|[\]\\\/]/g,'\\$&').replace(/ +/g,'\\s+')+'(?![a-z0-9])')}
 function palabra(s){var f=forma[s],m=s,c=0;for(var w in f)if(f[w]>c){c=f[w];m=w}return m}
 function idf(s){var d=inv[s]?inv[s].length:0;return Math.log(1+(N-d+.5)/(d+.5))}
 function lev(a,b,max){if(Math.abs(a.length-b.length)>max)return max+1;var p=[],i,j;for(j=0;j<=b.length;j++)p[j]=j;
@@ -8712,17 +8719,26 @@ function proximidad(u,cs){var listas=cs.map(function(c){var l=[];c.alt.forEach(f
  var cnt={},cub=0,ini=0,mejor=1e9;for(var f=0;f<ev.length;f++){var k=ev[f][1];if(!cnt[k])cub++;cnt[k]=(cnt[k]||0)+1;
   while(cub===listas.length){mejor=Math.min(mejor,ev[f][0]-ev[ini][0]);var k2=ev[ini][1];cnt[k2]--;if(!cnt[k2])cub--;ini++}}
  return 1+1.2/(1+Math.max(0,mejor-listas.length+1)/3)}
-function buscar(){var crudo=q.value.trim();res.innerHTML='';vis=[];sel=0;interp.textContent='';
+function buscar(){var crudo=q.value.trim();res.innerHTML='';vis=[];sel=0;interp.textContent='';frases=[];
  if(crudo.length<2){est.textContent='Escribe una palabra o una frase';return}
  if(activos&&!activos.size){est.textContent='Marca al menos un documento';return}
- var qc=crudo.replace(/\s+/g,'').toUpperCase(),codigo=RE_COD.test(qc);
- var exacta=codigo||/^".+"$/.test(crudo),v=norm(codigo?qc:exacta?crudo.slice(1,-1):crudo),cs=codigo?[]:conceptos(v),punt=[];
- if(codigo){var rc=new RegExp(v.replace(/[().]/g,'\\$&')+'(?![0-9])');U.forEach(function(u){if(!admitido(u))return;if(u.cod&&u.cod.toUpperCase()===qc)punt.push([u,2-u.k/1e7]);else if(rc.test(u.n))punt.push([u,1])})}
- else if(exacta){U.forEach(function(u){if(admitido(u)&&u.n.indexOf(v)>=0)punt.push([u,1])});cs.forEach(function(c){c.alt=new Map([[c.s,1]])})}
+ // frases entre comillas (fr) y el resto de la consulta; solo frases → texto exacto; frases y palabras → las palabras
+ // ordenan los resultados que contienen todas las frases
+ var fr=[],resto=crudo.replace(RE_Q,function(_,p){p=norm(p).replace(/\s+/g,' ').trim();if(p)fr.push(p);return ' '}).replace(RE_QS,' ');
+ var qc=crudo.replace(RE_QS,'').replace(/\s+/g,'').toUpperCase(),codigo=RE_COD.test(qc);
+ var regs=fr.map(reFrase),solo=!codigo&&fr.length>0&&!/[a-z0-9]/.test(norm(resto)),exacta=codigo||solo;
+ var v=norm(codigo?qc:resto+' '+fr.join(' ')),cs=codigo?[]:conceptos(v),punt=[];
+ function tiene(u){return regs.every(function(r){return r.test(u.n)})}
+ if(codigo){var rc=new RegExp('(^|[^a-z0-9])'+norm(qc).replace(/[().]/g,'\\$&')+'(?![0-9])');frases=[rc];
+  U.forEach(function(u){if(!admitido(u))return;if(u.cod&&u.cod.toUpperCase()===qc)punt.push([u,2-u.k/1e7]);else if(rc.test(u.n))punt.push([u,1])})}
+ else if(solo){frases=regs;
+  // todos coinciden: primero los títulos y los textos cortos (el texto exacto ocupa más de su contenido)
+  U.forEach(function(u){if(admitido(u)&&tiene(u))punt.push([u,1+(u.cab?.6:0)+(u.np?.2:0)+1/(1+u.len/12)])});cs.forEach(function(c){c.alt=new Map([[c.s,1]])})}
  else{if(!cs.length||cs.every(function(c){return !c.alt.size})){est.textContent='Sin resultados';return}
   var cand=new Set();cs.forEach(function(c){c.alt.forEach(function(_,s){(inv[s]||[]).forEach(function(k){cand.add(k)})})});
   var frase=cs.length>1?cs.map(function(c){return c.w}).join(' '):null;
-  cand.forEach(function(k){var u=U[k],tot=0,hit=0;if(!admitido(u))return;
+  if(fr.length)frases=regs;
+  cand.forEach(function(k){var u=U[k],tot=0,hit=0;if(!admitido(u)||!tiene(u))return;
    cs.forEach(function(c){var b=0;c.alt.forEach(function(w,s){var l=u.pos[s];if(!l)return;var tf=l.length,sc=w*idf(s)*tf*2.2/(tf+1.2*(.25+.75*u.len/media));if(sc>b)b=sc});
     if(b>0){hit++;if(u.s.st.has(c.s))b*=1.25}else{c.alt.forEach(function(w,s){if(u.s.st.has(s))b=Math.max(b,.35*w*idf(s))})}tot+=b});
    if(!tot)return;var cob=hit/cs.length;tot*=(.25+.75*cob*cob)*proximidad(u,cs);
@@ -8730,30 +8746,42 @@ function buscar(){var crudo=q.value.trim();res.innerHTML='';vis=[];sel=0;interp.
  punt.sort(function(a,b){return b[1]-a[1]});
  if(!punt.length){est.textContent='Sin resultados'+(activos&&activos.size<DOCS.length?' en los documentos marcados':'');return}
  var max=punt[0][1];vis=punt.slice(0,60).map(function(p){return{u:p[0],r:p[1]/max}});
- est.textContent=punt.length+(punt.length===1?' resultado':' resultados')+(codigo?' · requisito '+qc:exacta?' · frase exacta':' · ordenados por relevancia')+(activos&&activos.size<DOCS.length?' · en '+activos.size+' de '+DOCS.length+' documentos':'')+(punt.length>60?' · se muestran 60':'');
+ est.textContent=punt.length+(punt.length===1?' resultado':' resultados')+(codigo?' · requisito '+qc:solo?' · texto exacto':fr.length?' · con texto exacto, ordenados por relevancia':' · ordenados por relevancia')+(activos&&activos.size<DOCS.length?' · en '+activos.size+' de '+DOCS.length+' documentos':'')+(punt.length>60?' · se muestran 60':'');
  var notas=[],ampl=[];cs.forEach(function(c){if(c.nota)notas.push(c.nota);else{var x=[];c.alt.forEach(function(w,s){if(s!==c.s&&w>=.6)x.push(palabra(s))});if(x.length)ampl.push(c.w+' (+'+x.slice(0,4).join(', ')+')')}});
  interp.innerHTML=exacta?'':'<b>Conceptos:</b> '+esc(cs.map(function(c){return c.w}).join(' · '))+(ampl.length?' <span>· también '+esc(ampl.join('; '))+'</span>':'')+(notas.length?' <span>· corregido '+esc(notas.join('; '))+'</span>':'');
  vigente=cs;
  res.innerHTML=vis.map(function(o,k){var u=o.u,tipo=/^T[DH]$/.test(u.e.tagName)?'tabla':(u.e.tagName==='FIGURE'?'figura':(u.cab?'título':''));
-  return '<li data-k="'+k+'"'+(k===0?' class="sel"':'')+'><div class="sec"><span class="rel" style="--r:'+Math.max(.08,o.r).toFixed(2)+'"></span>'+(u.dn?'<em class="docu d-'+u.doc+'">'+esc(u.dn)+'</em>':'')+esc((u.s.num?u.s.num+' · ':'')+u.s.tt)+(u.cod?'<span class="cod">'+esc(u.cod)+'</span>':'')+(tipo?'<i>'+tipo+'</i>':'')+'</div><div class="frag">'+frag(u,cs,exacta&&u.n.indexOf(v)>=0?v:null)+'</div></li>'}).join('')}
+  return '<li data-k="'+k+'"'+(k===0?' class="sel"':'')+'><div class="sec"><span class="rel" style="--r:'+Math.max(.08,o.r).toFixed(2)+'"></span>'+(u.dn?'<em class="docu d-'+u.doc+'">'+esc(u.dn)+'</em>':'')+esc((u.s.num?u.s.num+' · ':'')+u.s.tt)+(u.cod?'<span class="cod">'+esc(u.cod)+'</span>':'')+(tipo?'<i>'+tipo+'</i>':'')+'</div><div class="frag">'+frag(u,cs,exacta||fr.length?posFrase(u):null)+'</div></li>'}).join('')}
 var sel=0,vis=[],vigente=[];
 function esc(t){return t.replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
 function stemsDe(cs){var m=new Set();cs.forEach(function(c){c.alt.forEach(function(_,s){m.add(s)})});return m}
-function frag(u,cs,exacta){var t=u.t,a,b,out='';
- if(exacta){var p=u.n.indexOf(exacta);a=Math.max(0,p-80);b=Math.min(t.length,p+exacta.length+120);
-  return (a>0?'… ':'')+esc(t.slice(a,p))+'<mark>'+esc(t.slice(p,p+exacta.length))+'</mark>'+esc(t.slice(p+exacta.length,b))+(b<t.length?' …':'')}
+// posición (en el texto normalizado, de la misma longitud que el original) de la primera frase que aparece en u
+function posFrase(u){for(var i=0;i<frases.length;i++){var m=frases[i].exec(u.n);if(m)return{p:m.index+m[1].length,n:m[0].length-m[1].length}}return null}
+function frag(u,cs,ex){var t=u.t,a,b,out='';
+ if(ex){var p=ex.p,n=ex.n;a=Math.max(0,p-80);b=Math.min(t.length,p+n+120);
+  return (a>0?'… ':'')+esc(t.slice(a,p))+'<mark>'+esc(t.slice(p,p+n))+'</mark>'+esc(t.slice(p+n,b))+(b<t.length?' …':'')}
  var m=stemsDe(cs),idx=[];u.tk.forEach(function(x,i){if(m.has(x.s)&&!VACIAS.has(x.w))idx.push(i)});
  var V=30,ini=0,mejor=-1;for(var i=0;i<idx.length;i++){var c=0;for(var j=i;j<idx.length&&idx[j]-idx[i]<V;j++)c++;if(c>mejor){mejor=c;ini=idx[i]}}
  var t0=Math.max(0,ini-8),t1=Math.min(u.tk.length-1,t0+V+8);a=t0?u.tk[t0].a:0;b=t1>=u.tk.length-1?t.length:u.tk[t1].b;
  var i0=a;idx.forEach(function(i){var x=u.tk[i];if(x.a<a||x.b>b)return;out+=esc(t.slice(i0,x.a))+'<mark>'+esc(t.slice(x.a,x.b))+'</mark>';i0=x.b});
  return (a>0?'… ':'')+out+esc(t.slice(i0,b))+(b<t.length?' …':'')}
 function marcar(){res.querySelectorAll('li').forEach(function(l,k){l.classList.toggle('sel',k===sel);if(k===sel)l.scrollIntoView({block:'nearest'})})}
+// Resalta solo las frases exactas en el elemento (aunque crucen etiquetas de formato); false si no hay ninguna
+function resaltarFrases(e,regs){var w=document.createTreeWalker(e,NodeFilter.SHOW_TEXT),nodos=[],todo='';
+ while(w.nextNode()){var nd=w.currentNode;nodos.push({nd:nd,a:todo.length});todo+=nd.nodeValue}
+ var n=norm(todo);if(n.length!==todo.length)return false;
+ var rg=[];regs.forEach(function(re){var g=new RegExp(re.source,'g'),m;while((m=g.exec(n))){var a=m.index+m[1].length,b=m.index+m[0].length;if(b>a)rg.push([a,b]);if(!m[0].length)g.lastIndex++}});
+ if(!rg.length)return false;
+ nodos.forEach(function(o){var t=o.nd.nodeValue,a0=o.a,a1=o.a+t.length,seg=rg.filter(function(r){return r[0]<a1&&r[1]>a0}).sort(function(x,y){return x[0]-y[0]});if(!seg.length)return;
+  var f=document.createDocumentFragment(),i=0;seg.forEach(function(r){var s=Math.max(r[0],a0)-a0,e2=Math.min(r[1],a1)-a0;if(s<i)s=i;if(e2<=s)return;f.appendChild(document.createTextNode(t.slice(i,s)));var mk=document.createElement('mark');mk.className='hl';mk.textContent=t.slice(s,e2);f.appendChild(mk);i=e2});
+  f.appendChild(document.createTextNode(t.slice(i)));o.nd.parentNode.replaceChild(f,o.nd)});
+ return true}
 function quitar(){document.querySelectorAll('mark.hl').forEach(function(mk){var p=mk.parentNode;p.replaceChild(document.createTextNode(mk.textContent),mk);p.normalize()})}
 function resaltar(e,m){var w=document.createTreeWalker(e,NodeFilter.SHOW_TEXT),nodos=[];while(w.nextNode())nodos.push(w.currentNode);
  nodos.forEach(function(nd){var t=nd.nodeValue,rg=toks(norm(t)).filter(function(x){return m.has(x.s)&&!VACIAS.has(x.w)});if(!rg.length)return;
   var f=document.createDocumentFragment(),i=0;rg.forEach(function(x){f.appendChild(document.createTextNode(t.slice(i,x.a)));var mk=document.createElement('mark');mk.className='hl';mk.textContent=t.slice(x.a,x.b);f.appendChild(mk);i=x.b});
   f.appendChild(document.createTextNode(t.slice(i)));nd.parentNode.replaceChild(f,nd)})}
-function ir(k){var o=vis[k];if(!o)return;cerrar();quitar();if(o.u.doc&&window.mostrarDoc)window.mostrarDoc(o.u.doc,false);resaltar(o.u.e,stemsDe(vigente));
+function ir(k){var o=vis[k];if(!o)return;cerrar();quitar();if(o.u.doc&&window.mostrarDoc)window.mostrarDoc(o.u.doc,false);if(!(frases.length&&resaltarFrases(o.u.e,frases)))resaltar(o.u.e,stemsDe(vigente));
  o.u.e.scrollIntoView({block:'center'});o.u.e.classList.remove('destacado');void o.u.e.offsetWidth;o.u.e.classList.add('destacado')}
 function abrir(){document.body.classList.remove('abierto');cap.classList.add('abierta');q.focus();q.select();if(q.value)buscar()}
 function cerrar(){cap.classList.remove('abierta')}
