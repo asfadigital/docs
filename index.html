@@ -153,7 +153,10 @@ nav .abrebusca kbd{white-space:nowrap}
 .busca .ia .err{color:var(--rojo)}
 .busca .ia a.cita{color:var(--num);font-weight:600;text-decoration:none;border-bottom:1px dotted currentColor}
 .busca .ia .clave{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 2px}
-.busca .ia .clave input{flex:1;min-width:190px;border:1px solid var(--linea);border-radius:8px;padding:7px 10px;background:var(--papel);color:var(--fg);font:400 14px "Barlow",system-ui,sans-serif}
+.busca .ia .clave input,.busca .ia .clave select{border:1px solid var(--linea);border-radius:8px;padding:7px 10px;background:var(--papel);color:var(--fg);font:400 14px "Barlow",system-ui,sans-serif}
+.busca .ia .clave input{flex:1;min-width:190px}
+.busca .ia .clave select{flex:none;max-width:100%;cursor:pointer}
+.busca .ia .clave input.modelo{min-width:150px;font-size:13.5px}
 .busca .ia button.ok,.busca .ia button.preguntar{border:0;border-radius:8px;padding:7px 14px;background:var(--navy);color:#fff;font:600 13.5px "Barlow",sans-serif;cursor:pointer}
 .busca .ia button.copiar,.busca .ia button.olvidar{border:1px solid var(--linea);border-radius:8px;padding:6px 12px;background:var(--papel);color:var(--fg2);font:600 13px "Barlow",sans-serif;cursor:pointer;margin-left:0}
 .busca .ia .esperando::after{content:"AE";animation:parpadeo 1s steps(2) infinite;color:var(--fg2)}
@@ -15252,7 +15255,7 @@ p.pl,p.li,p.nota{padding-left:1.2em}p.li::before{left:2px}p.k1{margin-left:12px}
 <div class="busca" id="busca" role="dialog" aria-label="Buscar en la documentación"><div class="caja">
 <div class="campo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" type="search" placeholder="Busca, &#39;texto exacto&#39; o &quot;pregunta a la IA&quot;…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"><kbd>Esc</kbd></div>
 <div class="estado" id="estado">Escribe una palabra o una frase</div><div class="interp" id="interp"></div><ol id="res"></ol>
-<div class="ayuda"><span>↑ ↓ moverse</span><span>Intro ir al resultado</span><span>Código de requisito: F(B)-6</span><span>'comillas simples' texto exacto</span><span>"comillas dobles" pregunta a la IA</span></div></div></div>
+<div class="ayuda"><span>↑ ↓ moverse</span><span>Intro ir al resultado</span><span>Código de requisito: F(B)-6</span><span>'comillas simples' texto exacto</span><span>"comillas dobles" pregunta a la IA (Claude, OpenAI, Gemini o Mistral)</span></div></div></div>
 <script>
 (function(){
 var b=document.body,r=document.documentElement,DOCS={"rcf": "Reglamento de Circulación", "emb": "ASFA Embarcado", "ope": "Operación de trenes", "con": "Gestión de configuración", "ubi": "Ubicación de balizas", "adif": "ASFA Vía vigente", "via": "ASFA Vía beta"};
@@ -15503,27 +15506,81 @@ function ir(k){var o=vis[k];if(!o)return;cerrar();quitar();if(o.u.doc&&window.mo
  o.u.e.scrollIntoView({block:'center'});o.u.e.classList.remove('destacado');void o.u.e.offsetWidth;o.u.e.classList.add('destacado')}
 // ---------------------------------------------------------------------------
 // Búsqueda con IA: "entre comillas dobles". Se eligen los pasajes más relacionados de los documentos marcados y se le
-// piden a Claude, que responde citando los apartados. La clave de API es del usuario y se guarda solo en su navegador
-// (nunca viaja en este fichero); sin clave, se puede copiar el contexto para pegarlo en Claude.
-var IA_MODELO='claude-opus-5-5',IA_MAX=4000,IA_FRAG=60,IA_CHARS=26000,IA_CLAVE='asfa-ia-clave',pendienteIA=null,ocupadaIA=false;
+// piden a un modelo de IA, que responde citando los apartados. Funciona con la clave de API del propio usuario de
+// Claude (Anthropic), OpenAI, Gemini (Google) o Mistral: la clave se guarda solo en su navegador (nunca viaja en este
+// fichero) y se envía únicamente al proveedor elegido. Sin clave, se puede copiar el contexto para pegarlo en una IA.
+var IA_FRAG=60,IA_CHARS=26000,pendienteIA=null,ocupadaIA=false;
 var SISTEMA='Eres un asistente de documentación ferroviaria española (sistema ASFA y Reglamento de Circulación '+
  'Ferroviaria). Respondes únicamente con lo que digan los fragmentos facilitados, que son transcripciones literales de '+
  'los documentos. Cita el apartado entre corchetes tal como aparece en el fragmento, por ejemplo [Rcf.2.1.1.3] o '+
  '[Emb.4.1.2]. Si los fragmentos no contienen la respuesta, dilo en una frase y no la deduzcas. Estructura: primero una '+
  'respuesta directa de una o dos frases; después, si la pregunta lo pide o hay diferencias entre documentos, un párrafo '+
  'por documento con lo que dice cada uno. Español de España, técnico y conciso, sin fórmulas de cortesía.';
+function soloCabLista(h){var c={};for(var k in h)if(k!=='content-type')c[k]=h[k];return c}
+function tokenChat(d){var c=d.choices&&d.choices[0];return c&&c.delta&&c.delta.content||''}
+// Cada proveedor: dirección, cabeceras, cuerpo de la petición, cómo se lee el texto de cada trozo del streaming y cómo
+// se pide la lista de sus modelos (no se escriben a mano: cambian y una clave no da acceso a todos)
+var PROV={
+ anthropic:{n:'Claude (Anthropic)',host:'api.anthropic.com',web:'console.anthropic.com',ph:'sk-ant-…',max:16000,def:'claude-opus-5-5',
+  cab:function(k){return{'content-type':'application/json','x-api-key':k,'anthropic-version':'2026-10-21','anthropic-dangerous-direct-browser-access':'true'}},
+  url:function(){return 'https://api.anthropic.com/v1/messages'},
+  cuerpo:function(m,sis,u,mx){return{model:m,max_tokens:mx,stream:true,system:sis,output_config:{effort:'medium'},messages:[{role:'user',content:u}]}},
+  texto:function(d){return d.type==='content_block_delta'&&d.delta&&d.delta.type==='text_delta'?d.delta.text:''},
+  lista:{url:'https://api.anthropic.com/v1/models?limit=100',ids:function(j){return(j.data||[]).map(function(x){return x.id})},pref:/^claude-opus-[\d-]+$/}},
+ openai:{n:'OpenAI (ChatGPT)',host:'api.openai.com',web:'platform.openai.com',ph:'sk-…',max:16000,def:'',
+  cab:function(k){return{'content-type':'application/json','authorization':'Bearer '+k}},
+  url:function(){return 'https://api.openai.com/v1/chat/completions'},
+  cuerpo:function(m,sis,u,mx){return{model:m,stream:true,max_completion_tokens:mx,messages:[{role:'system',content:sis},{role:'user',content:u}]}},
+  texto:tokenChat,
+  lista:{url:'https://api.openai.com/v1/models',ids:function(j){return(j.data||[]).map(function(x){return x.id}).filter(function(i){
+   return /^(gpt-|o\d|chatgpt-)/.test(i)&&!/(audio|realtime|tts|transcribe|image|embedding|moderation|search|instruct|codex|vision|\d{4}-\d{2}-\d{2})/.test(i)})},pref:/^gpt-[\d.]+$/}},
+ gemini:{n:'Gemini (Google)',host:'generativelanguage.googleapis.com',web:'aistudio.google.com',ph:'AIza…',max:16000,def:'',
+  cab:function(k){return{'content-type':'application/json','x-goog-api-key':k}},
+  url:function(m){return 'https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(m)+':streamGenerateContent?alt=sse'},
+  cuerpo:function(m,sis,u,mx){return{systemInstruction:{parts:[{text:sis}]},contents:[{role:'user',parts:[{text:u}]}],generationConfig:{maxOutputTokens:mx}}},
+  texto:function(d){var c=d.candidates&&d.candidates[0],p=c&&c.content&&c.content.parts||[];return p.filter(function(x){return !x.thought}).map(function(x){return x.text||''}).join('')},
+  lista:{url:'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',ids:function(j){return(j.models||[]).filter(function(m){return(m.supportedGenerationMethods||[]).indexOf('generateContent')>=0}).map(function(m){return m.name.replace(/^models\//,'')}).filter(function(i){
+   return /^gemini-/.test(i)&&!/(embedding|image|tts|audio|live|robotics|computer)/.test(i)})},pref:/^gemini-[\d.]+-flash$/}},
+ mistral:{n:'Mistral',host:'api.mistral.ai',web:'console.mistral.ai',ph:'clave de Mistral',max:8000,def:'',
+  cab:function(k){return{'content-type':'application/json','authorization':'Bearer '+k}},
+  url:function(){return 'https://api.mistral.ai/v1/chat/completions'},
+  cuerpo:function(m,sis,u,mx){return{model:m,stream:true,max_tokens:mx,messages:[{role:'system',content:sis},{role:'user',content:u}]}},
+  texto:tokenChat,
+  lista:{url:'https://api.mistral.ai/v1/models',ids:function(j){return(j.data||[]).filter(function(m){return !m.capabilities||m.capabilities.completion_chat}).map(function(m){return m.id}).filter(function(i){
+   return !/(embed|moderation|ocr|voxtral|transcri)/.test(i)})},pref:/^mistral-large-latest$/}}};
+var ORDEN_PROV=['anthropic','openai','gemini','mistral'];
+function lsGet(k){try{return localStorage.getItem(k)||''}catch(e){return ''}}
+function lsSet(k,v){try{v?localStorage.setItem(k,v):localStorage.removeItem(k)}catch(e){}}
+function provIA(){var p=lsGet('asfa-ia-prov');return PROV[p]?p:'anthropic'}
+function claveIA(p){return lsGet('asfa-ia-clave-'+p)||(p==='anthropic'?lsGet('asfa-ia-clave'):'')}
+function guardarClaveIA(p,v){lsSet('asfa-ia-clave-'+p,v);if(p==='anthropic'&&!v)lsSet('asfa-ia-clave','')}
+function modeloIA(p){return lsGet('asfa-ia-modelo-'+p)||PROV[p].def}
+function listaIA(p){try{return JSON.parse(lsGet('asfa-ia-lista-'+p))||[]}catch(e){return[]}}
+// el proveedor se deduce de la forma de la clave (la de Mistral no tiene prefijo: se elige a mano)
+function detectarProv(k){if(/^sk-ant-/.test(k))return 'anthropic';if(/^AIza/.test(k))return 'gemini';if(/^sk-/.test(k))return 'openai';return null}
+// modelo por defecto de la lista: el más reciente de los preferidos y, si no hay, el primero
+function elegirModelo(p,ids){if(!ids.length)return '';var pr=ids.filter(function(i){return PROV[p].lista.pref.test(i)});
+ var c=(pr.length?pr:ids).slice().sort(function(a,b){return b.localeCompare(a,'en',{numeric:true})});return c[0]}
+async function cargarModelos(p,k){try{var P=PROV[p],r=await fetch(P.lista.url,{headers:soloCabLista(P.cab(k))});if(!r.ok)return[];
+ var ids=P.lista.ids(await r.json());ids=ids.filter(function(x,i){return ids.indexOf(x)===i}).sort(function(a,b){return b.localeCompare(a,'en',{numeric:true})});
+ if(ids.length)lsSet('asfa-ia-lista-'+p,JSON.stringify(ids));return ids}catch(e){return[]}}
 var pan=document.createElement('div');pan.className='ia';pan.hidden=true;res.insertAdjacentElement('beforebegin',pan);
 function ocultarIA(){if(ocupadaIA)return;pan.hidden=true;pan.innerHTML=''}
-function claveIA(){try{return localStorage.getItem(IA_CLAVE)||''}catch(e){return ''}}
-function guardarClaveIA(v){try{v?localStorage.setItem(IA_CLAVE,v):localStorage.removeItem(IA_CLAVE)}catch(e){}}
-function proponerIA(preg){if(ocupadaIA)return;pan.hidden=false;
- pan.innerHTML='<div class="cab"><b>Preguntar a la IA</b><span>'+esc(IA_MODELO)+'</span></div><p class="preg">'+esc(preg)+
-  '</p><div class="clave"><button class="preguntar">Preguntar (Intro)</button>'+(claveIA()?'<button class="olvidar">Olvidar la clave</button>':'')+'</div>'}
+function opcionesProv(sel){return ORDEN_PROV.map(function(p){return '<option value="'+p+'"'+(p===sel?' selected':'')+'>'+esc(PROV[p].n)+'</option>'}).join('')}
+function proponerIA(preg){if(ocupadaIA)return;pan.hidden=false;var p=provIA(),P=PROV[p],k=claveIA(p);
+ pan.innerHTML='<div class="cab"><b>Preguntar a la IA</b>'+(k?'<button class="olvidar" title="Olvidar la clave guardada de '+esc(P.n)+'">⚙</button>':'')+'</div><p class="preg">'+esc(preg)+
+  '</p><div class="clave"><select class="prov" aria-label="Proveedor de IA">'+opcionesProv(p)+'</select>'+
+  '<input class="modelo" list="ia-modelos" value="'+esc(lsGet('asfa-ia-modelo-'+p))+'" placeholder="'+esc(P.def?P.def:'modelo (se elige solo al conectar)')+'" autocomplete="off" spellcheck="false" aria-label="Modelo">'+
+  '<datalist id="ia-modelos">'+listaIA(p).map(function(m){return '<option value="'+esc(m)+'">'}).join('')+'</datalist>'+
+  '<button class="preguntar">Preguntar (Intro)</button></div>'+
+  '<p class="pie">'+(k?'Clave de '+esc(P.n)+' guardada en este navegador.':'Se pedirá la clave de '+esc(P.n)+' al preguntar.')+' Los fragmentos se envían a '+esc(P.host)+'.</p>'}
 // fragmentos que se envían: los pasajes mejor puntuados de los documentos marcados, con su documento y su apartado
-function contextoIA(preg){var r=porConceptos(norm(preg),function(){return true}),us=r.punt.slice(0,IA_FRAG).map(function(x){return x[0]});
- var t=us.map(function(u,i){return '['+(i+1)+'] '+(u.dn?u.dn+' · ':'')+(u.s.num?u.s.num+' ':'')+u.s.tt+'\n'+u.t.slice(0,700)}).join('\n\n');
+function contextoIA(preg){var r=porConceptos(norm(preg),function(){return true}),us=[],partes=[],n=0;
+ r.punt.slice(0,IA_FRAG).forEach(function(x){var u=x[0];
+  var t='['+(us.length+1)+'] '+(u.dn?u.dn+' · ':'')+(u.s.num?u.s.num+' ':'')+u.s.tt+'\n'+u.t.slice(0,900);
+  if(n+t.length>IA_CHARS)return;n+=t.length+2;us.push(u);partes.push(t)});
  var docs={};us.forEach(function(u){docs[u.doc]=1});
- return {texto:t,n:us.length,docs:Object.keys(docs).length}}
+ return {texto:partes.join('\n\n'),n:us.length,docs:Object.keys(docs).length}}
 function promptIA(preg,ctx){return 'PREGUNTA\n'+preg+'\n\nFRAGMENTOS DE LOS DOCUMENTOS\n'+ctx.texto}
 function formatoIA(t){var h=esc(t).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/^#+\s*/gm,'').replace(/^[-*•]\s+/gm,'• ').replace(/\n/g,'<br>');
  return h.replace(/\[([A-Za-zÁÉÍÓÚÑ]{2,6}\.[0-9A-Za-z.()\-]+?)\]/g,function(m,n){var id=anclaDe(n);
@@ -15532,53 +15589,65 @@ function formatoIA(t){var h=esc(t).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').repla
 function anclaDe(n){var k=n.replace(/\.$/,'');
  while(!ANCLA[k]&&k.indexOf('.')>0)k=k.slice(0,k.lastIndexOf('.'));
  return ANCLA[k]||null}
-function pedirClaveIA(preg,ctx){pan.hidden=false;
- pan.innerHTML='<div class="cab"><b>Búsqueda con IA</b></div><p>Para que la IA redacte la respuesta hace falta una clave '+
-  'de API de Anthropic. Se guarda solo en este navegador y se envía únicamente a api.anthropic.com.</p>'+
-  '<div class="clave"><input type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">'+
+function pedirClaveIA(preg,ctx){pan.hidden=false;var p=provIA();
+ pan.innerHTML='<div class="cab"><b>Búsqueda con IA</b></div><p>Para que la IA redacte la respuesta hace falta una clave de API de '+
+  'Claude, OpenAI, Gemini o Mistral. Se guarda solo en este navegador y se envía únicamente al proveedor elegido.</p>'+
+  '<div class="clave"><select class="prov" aria-label="Proveedor de IA">'+opcionesProv(p)+'</select>'+
+  '<input class="clavein" type="password" placeholder="'+esc(PROV[p].ph)+'" autocomplete="off" spellcheck="false" aria-label="Clave de API">'+
   '<button class="ok">Guardar y preguntar</button><button class="copiar">Copiar la pregunta y los fragmentos</button></div>'+
-  '<p class="pie">La clave se obtiene en console.anthropic.com; cada consulta consume tokens de esa cuenta. Sin clave, '+
-  'copia el contexto ('+ctx.n+' fragmentos) y pégalo en Claude.</p>';
- var inp=pan.querySelector('input');inp.focus();
- pan.querySelector('.ok').onclick=function(){var v=inp.value.trim();if(!v)return;guardarClaveIA(v);preguntarIA(preg)};
+  '<p class="pie">La clave se obtiene en <span class="web">'+esc(PROV[p].web)+'</span>; cada consulta consume tokens de esa cuenta. Sin clave, '+
+  'copia el contexto ('+ctx.n+' fragmentos) y pégalo en la IA que prefieras.</p>';
+ var inp=pan.querySelector('.clavein'),sel=pan.querySelector('select.prov'),web=pan.querySelector('.web');inp.focus();
+ function cambia(){var v=sel.value;lsSet('asfa-ia-prov',v);inp.placeholder=PROV[v].ph;web.textContent=PROV[v].web}
+ sel.onchange=cambia;
+ inp.addEventListener('input',function(){var d=detectarProv(inp.value.trim());if(d&&d!==sel.value){sel.value=d;cambia()}});
+ pan.querySelector('.ok').onclick=function(){var v=inp.value.trim();if(!v)return;var d=detectarProv(v)||sel.value;lsSet('asfa-ia-prov',d);guardarClaveIA(d,v);preguntarIA(preg)};
  inp.addEventListener('keydown',function(ev){if(ev.key==='Enter'){ev.preventDefault();ev.stopPropagation();pan.querySelector('.ok').click()}});
  pan.querySelector('.copiar').onclick=function(){var b=pan.querySelector('.copiar');
   navigator.clipboard.writeText(promptIA(preg,ctx)).then(function(){b.textContent='Copiado'},function(){b.textContent='No se ha podido copiar'})}}
-function errorIA(cod,cuerpo){var m='';try{m=(JSON.parse(cuerpo).error||{}).message||''}catch(e){}
- if(cod===401)return 'La clave no es válida o ha caducado.';
- if(cod===429)return 'La cuenta ha superado su límite de uso; inténtalo dentro de un momento.';
- if(cod===400&&/credit|balance/i.test(m))return 'La cuenta no tiene saldo disponible.';
- return 'Error '+cod+(m?': '+m:'')}
-async function preguntarIA(preg){if(ocupadaIA)return;var ctx=contextoIA(preg);
+function errorIA(cod,cuerpo,p,m){var j={},t='';try{j=JSON.parse(cuerpo)}catch(e){}
+ if(Array.isArray(j))j=j[0]||{};t=(j.error&&(j.error.message||j.error))||j.message||j.detail||'';if(typeof t!=='string')t=JSON.stringify(t);
+ if(cod===401||cod===403||(cod===400&&/api key|api_key|apikey/i.test(t)&&/invalid|not valid|incorrect/i.test(t)))return 'La clave no es válida para '+PROV[p].n+' o no tiene permiso.';
+ if(cod===404)return 'El modelo «'+m+'» no existe o la clave no tiene acceso a él. Elige otro en la lista.';
+ if(cod===429)return 'La cuenta ha superado su límite de uso o no tiene saldo; inténtalo dentro de un momento.';
+ if(cod===400&&/credit|balance|quota|billing/i.test(t))return 'La cuenta no tiene saldo disponible.';
+ return 'Error '+cod+(t?': '+t:'')}
+async function preguntarIA(preg){if(ocupadaIA)return;
+ var mi=pan.querySelector('input.modelo'),p=provIA(),P=PROV[p];if(mi)lsSet('asfa-ia-modelo-'+p,mi.value.trim());
+ var ctx=contextoIA(preg);
  if(!ctx.n){pan.hidden=false;pan.innerHTML='<div class="cab"><b>Búsqueda con IA</b></div><p class="err">No hay pasajes relacionados en los documentos marcados.</p>';return}
- var k=claveIA();if(!k){pedirClaveIA(preg,ctx);return}
+ var k=claveIA(p);if(!k){pedirClaveIA(preg,ctx);return}
  ocupadaIA=true;pendienteIA=null;pan.hidden=false;
- pan.innerHTML='<div class="cab"><b>Respuesta de la IA</b><span>'+esc(IA_MODELO)+'</span><button class="olvidar" title="Olvidar la clave guardada">⚙</button></div>'+
+ pan.innerHTML='<div class="cab"><b>Respuesta de la IA</b><span class="mod">'+esc(P.n)+'</span><button class="olvidar" title="Olvidar la clave guardada de '+esc(P.n)+'">⚙</button></div>'+
   '<div class="txt esperando"></div><p class="pie">'+ctx.n+' fragmentos de '+ctx.docs+' documento'+(ctx.docs===1?'':'s')+
-  '. Respuesta generada por IA a partir de esos fragmentos: en caso de duda prevalece el texto del documento.</p>';
- var caja=pan.querySelector('.txt'),txt='';
+  ' enviados a '+esc(P.host)+'. Respuesta generada por IA a partir de esos fragmentos: en caso de duda prevalece el texto del documento.</p>';
+ var caja=pan.querySelector('.txt'),txt='',m=modeloIA(p);
  try{
-  var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-   headers:{'content-type':'application/json','x-api-key':k,'anthropic-version':'2026-10-21','anthropic-dangerous-direct-browser-access':'true'},
-   body:JSON.stringify({model:IA_MODELO,max_tokens:IA_MAX,stream:true,system:SISTEMA,output_config:{effort:'medium'},
-    messages:[{role:'user',content:promptIA(preg,ctx)}]})});
-  if(!r.ok||!r.body){var cu=r.body?await r.text():'';caja.classList.remove('esperando');caja.innerHTML='<span class="err">'+esc(errorIA(r.status,cu))+'</span>';ocupadaIA=false;return}
+  if(!m){var ids=await cargarModelos(p,k);m=elegirModelo(p,ids);if(m)lsSet('asfa-ia-modelo-'+p,m)}
+  if(!m){caja.classList.remove('esperando');caja.innerHTML='<span class="err">No se ha podido obtener la lista de modelos de '+esc(P.n)+': comprueba la clave o escribe el nombre del modelo.</span>';ocupadaIA=false;return}
+  pan.querySelector('.mod').textContent=P.n+' · '+m;
+  var r=await fetch(P.url(m),{method:'POST',headers:P.cab(k),body:JSON.stringify(P.cuerpo(m,SISTEMA,promptIA(preg,ctx),P.max))});
+  if(!r.ok||!r.body){var cu=r.body?await r.text():'';caja.classList.remove('esperando');caja.innerHTML='<span class="err">'+esc(errorIA(r.status,cu,p,m))+'</span>';ocupadaIA=false;return}
   var rd=r.body.getReader(),dec=new TextDecoder(),buf='';
-  for(;;){var x=await rd.read();if(x.done)break;buf+=dec.decode(x.value,{stream:true});
+  for(;;){var x=await rd.read();if(x.done)break;buf+=dec.decode(x.value,{stream:true}).replace(/\r\n/g,'\n');
    var trozos=buf.split('\n\n');buf=trozos.pop();
    trozos.forEach(function(ev){ev.split('\n').forEach(function(l){if(l.indexOf('data:')!==0)return;var d;
     try{d=JSON.parse(l.slice(5).trim())}catch(e){return}
-    if(d.type==='content_block_delta'&&d.delta&&d.delta.type==='text_delta'){txt+=d.delta.text;caja.innerHTML=formatoIA(txt)}
-    else if(d.type==='error'&&d.error)caja.innerHTML=formatoIA(txt)+'<br><span class="err">'+esc(d.error.message||'Error del servicio')+'</span>'})})}
+    if(d.error){caja.innerHTML=formatoIA(txt)+'<br><span class="err">'+esc(d.error.message||'Error del servicio')+'</span>';return}
+    var t=P.texto(d);if(t){txt+=t;caja.innerHTML=formatoIA(txt)}})})}
   caja.classList.remove('esperando');
   if(!txt)caja.innerHTML='<span class="err">La IA no ha devuelto texto.</span>'
- }catch(err){caja.classList.remove('esperando');caja.innerHTML=formatoIA(txt)+'<br><span class="err">No se ha podido conectar con la IA: '+esc(err.message||'')+'</span>'}
+ }catch(err){caja.classList.remove('esperando');caja.innerHTML=formatoIA(txt)+'<br><span class="err">No se ha podido conectar con '+esc(P.host)+': '+esc(err.message||'')+'</span>'}
  ocupadaIA=false}
 pan.addEventListener('click',function(ev){var b=ev.target.closest('button'),a=ev.target.closest('a.cita');
  if(a){cerrar();return}
  if(!b)return;
  if(b.classList.contains('preguntar')){var preg=pendienteIA;if(preg)preguntarIA(preg)}
- else if(b.classList.contains('olvidar')){guardarClaveIA('');b.textContent='Clave olvidada';b.disabled=true}});
+ else if(b.classList.contains('olvidar')){guardarClaveIA(provIA(),'');lsSet('asfa-ia-lista-'+provIA(),'');b.textContent='Clave olvidada';b.disabled=true}});
+// cambio de proveedor o de modelo en el panel de la pregunta
+pan.addEventListener('change',function(ev){var t=ev.target;
+ if(t.classList.contains('prov')&&pendienteIA&&!pan.querySelector('.clavein')){lsSet('asfa-ia-prov',t.value);proponerIA(pendienteIA)}
+ else if(t.classList.contains('modelo'))lsSet('asfa-ia-modelo-'+provIA(),t.value.trim())});
 function abrir(){document.body.classList.remove('abierto');cap.classList.add('abierta');q.focus();q.select();if(q.value)buscar()}
 function cerrar(){cap.classList.remove('abierta')}
 document.getElementById('abrebusca').onclick=abrir;document.getElementById('buscam').onclick=abrir;
